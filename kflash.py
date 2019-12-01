@@ -19,10 +19,19 @@ import os
 
 
 class KFlash:
+    print_callback = None
+
     def __init__(self, print_callback = None):
         self.killProcess = False
         self.loader = None
-        self.print_callback = print_callback
+        KFlash.print_callback = print_callback
+
+    @staticmethod
+    def log(*args, **kwargs):
+        if KFlash.print_callback:
+            KFlash.print_callback(*args, **kwargs)
+        else:
+            print(*args, **kwargs)
 
     def process(self, terminal=True, dev="", baudrate=1500000, board=None, sram = False, file="", callback=None, noansi=False, terminal_auto_size=False, terminal_size=(50, 1), slow_mode = False):
         self.killProcess = False
@@ -43,6 +52,20 @@ class KFlash:
         ISP_FLASH_SECTOR_SIZE = 4096
         ISP_FLASH_DATA_FRAME_SIZE = ISP_FLASH_SECTOR_SIZE * 16
 
+        def tuple2str(t):
+            ret = ""
+            for i in t:
+                ret += i+" "
+            return ret
+
+        def raise_exception(exception):
+            if self.loader:
+                try:
+                    self.loader._port.close()
+                except Exception:
+                    pass
+            raise exception
+
         try:
             from enum import Enum
         except ImportError:
@@ -56,28 +79,6 @@ class KFlash:
             err = (ERROR_MSG,'PySerial must be installed, run '+BASH_TIPS['GREEN']+'`' + ('pip', 'pip3')[sys.version_info > (3, 0)] + ' install pyserial`',BASH_TIPS['DEFAULT'])
             err = tuple2str(err)
             raise Exception(err)
-
-        def tuple2str(t):
-            ret = ""
-            for i in t:
-                ret += i+" "
-            return ret
-
-        def printf(*args, **kwargs):
-            end = kwargs.pop('end', "\n")
-
-            if self.print_callback:
-                self.print_callback(*args, end=end)
-            else:
-                print(*args, end = end)
-
-        def raise_exception(exception):
-            if self.loader:
-                try:
-                    self.loader._port.close()
-                except Exception:
-                    pass
-            raise exception
 
         class TimeoutError(Exception): pass
 
@@ -313,10 +314,10 @@ class KFlash:
             percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
             filledLength = int(length * iteration // total)
             bar = fill * filledLength + '-' * (length - filledLength)
-            printf('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
+            KFlash.log('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
             # Print New Line on Complete
             if iteration == total:
-                printf()
+                KFlash.log()
             if callback:
                 fileTypeStr = filename
                 if prefix == "Downloading ISP:":
@@ -396,7 +397,7 @@ class KFlash:
                     if ISPResponse.ISPOperation(op) == ISPResponse.ISPOperation.ISP_DEBUG_INFO:
                         text = data[2:].decode()
                 except ValueError:
-                    printf('Warning: recv unknown op', op)
+                    KFlash.log('Warning: recv unknown op', op)
 
                 return (op, reason, text)
 
@@ -444,105 +445,104 @@ class KFlash:
             for i in range(0, len(l), n):
                 yield l[i:i + n]
 
-        def getTerminalSize():
-           import platform
-           current_os = platform.system()
-           tuple_xy=None
-           if current_os == 'Windows':
-               tuple_xy = _getTerminalSize_windows()
-               if tuple_xy is None:
-                  tuple_xy = _getTerminalSize_tput()
-                  # needed for window's python in cygwin's xterm!
-           if current_os == 'Linux' or current_os == 'Darwin' or  current_os.startswith('CYGWIN'):
-               tuple_xy = _getTerminalSize_linux()
-           if tuple_xy is None:
-               # Use default value
-               tuple_xy = (80, 25)      # default value
-           return tuple_xy
+        class TerminalSize:
+            @staticmethod
+            def getTerminalSize():
+                import platform
+                current_os = platform.system()
+                tuple_xy=None
+                if current_os == 'Windows':
+                    tuple_xy = TerminalSize._getTerminalSize_windows()
+                    if tuple_xy is None:
+                        tuple_xy = TerminalSize._getTerminalSize_tput()
+                        # needed for window's python in cygwin's xterm!
+                if current_os == 'Linux' or current_os == 'Darwin' or  current_os.startswith('CYGWIN'):
+                    tuple_xy = TerminalSize._getTerminalSize_linux()
+                if tuple_xy is None:
+                    # Use default value
+                    tuple_xy = (80, 25)      # default value
+                return tuple_xy
 
-        def _getTerminalSize_windows():
-            res=None
-            try:
-                from ctypes import windll, create_string_buffer
-
-                # stdin handle is -10
-                # stdout handle is -11
-                # stderr handle is -12
-
-                h = windll.kernel32.GetStdHandle(-12)
-                csbi = create_string_buffer(22)
-                res = windll.kernel32.GetConsoleScreenBufferInfo(h, csbi)
-            except:
-                return None
-            if res:
-                import struct
-                (bufx, bufy, curx, cury, wattr,
-                 left, top, right, bottom, maxx, maxy) = struct.unpack("hhhhHhhhhhh", csbi.raw)
-                sizex = right - left + 1
-                sizey = bottom - top + 1
-                return sizex, sizey
-            else:
-                return None
-
-        def _getTerminalSize_tput():
-            # get terminal width
-            # src: http://stackoverflow.com/questions/263890/how-do-i-find-the-width-height-of-a-terminal-window
-            try:
-               import subprocess
-               proc=subprocess.Popen(["tput", "cols"],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
-               output=proc.communicate(input=None)
-               cols=int(output[0])
-               proc=subprocess.Popen(["tput", "lines"],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
-               output=proc.communicate(input=None)
-               rows=int(output[0])
-               return (cols,rows)
-            except:
-               return None
-
-
-        def _getTerminalSize_linux():
-            def ioctl_GWINSZ(fd):
+            @staticmethod
+            def _getTerminalSize_windows():
+                res=None
                 try:
-                    import fcntl, termios, struct, os
-                    cr = struct.unpack('hh', fcntl.ioctl(fd, termios.TIOCGWINSZ,'1234'))
+                    from ctypes import windll, create_string_buffer
+
+                    # stdin handle is -10
+                    # stdout handle is -11
+                    # stderr handle is -12
+
+                    h = windll.kernel32.GetStdHandle(-12)
+                    csbi = create_string_buffer(22)
+                    res = windll.kernel32.GetConsoleScreenBufferInfo(h, csbi)
                 except:
                     return None
-                return cr
-            cr = ioctl_GWINSZ(0) or ioctl_GWINSZ(1) or ioctl_GWINSZ(2)
-            if not cr:
+                if res:
+                    import struct
+                    (bufx, bufy, curx, cury, wattr,
+                    left, top, right, bottom, maxx, maxy) = struct.unpack("hhhhHhhhhhh", csbi.raw)
+                    sizex = right - left + 1
+                    sizey = bottom - top + 1
+                    return sizex, sizey
+                else:
+                    return None
+
+            @staticmethod
+            def _getTerminalSize_tput():
+                # get terminal width
+                # src: http://stackoverflow.com/questions/263890/how-do-i-find-the-width-height-of-a-terminal-window
                 try:
-                    fd = os.open(os.ctermid(), os.O_RDONLY)
-                    cr = ioctl_GWINSZ(fd)
-                    os.close(fd)
-                except:
-                    pass
-            if not cr:
-                try:
-                    cr = (os.env['LINES'], os.env['COLUMNS'])
+                    import subprocess
+                    proc=subprocess.Popen(["tput", "cols"],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+                    output=proc.communicate(input=None)
+                    cols=int(output[0])
+                    proc=subprocess.Popen(["tput", "lines"],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+                    output=proc.communicate(input=None)
+                    rows=int(output[0])
+                    return (cols,rows)
                 except:
                     return None
-            return int(cr[1]), int(cr[0])
 
-        def get_terminal_size(fallback=(100, 24)):
-            try:
-                columns, rows = getTerminalSize()
-            except:
-                columns, rows = fallback
-            if not terminal:
-                if not terminal_auto_size:
-                    columns, rows = terminal_size
-            return columns, rows
+            @staticmethod
+            def _getTerminalSize_linux():
+                def ioctl_GWINSZ(fd):
+                    try:
+                        import fcntl, termios, struct, os
+                        cr = struct.unpack('hh', fcntl.ioctl(fd, termios.TIOCGWINSZ,'1234'))
+                    except:
+                        return None
+                    return cr
+                cr = ioctl_GWINSZ(0) or ioctl_GWINSZ(1) or ioctl_GWINSZ(2)
+                if not cr:
+                    try:
+                        fd = os.open(os.ctermid(), os.O_RDONLY)
+                        cr = ioctl_GWINSZ(fd)
+                        os.close(fd)
+                    except:
+                        pass
+                if not cr:
+                    try:
+                        cr = (os.env['LINES'], os.env['COLUMNS'])
+                    except:
+                        return None
+                return int(cr[1]), int(cr[0])
+
+            @staticmethod
+            def get_terminal_size(fallback=(100, 24), terminal = False):
+                try:
+                    columns, rows = TerminalSize.getTerminalSize()
+                    if not terminal:
+                        if not terminal_auto_size:
+                            columns, rows = terminal_size
+                except:
+                    columns, rows = fallback
+
+                return columns, rows
 
         class MAIXLoader:
-            def raise_exception(self, exception):
-                try:
-                    self._port.close()
-                except Exception:
-                    pass
-                raise exception
-
             def change_baudrate(self, baudrate):
-                printf(INFO_MSG,"Selected Baudrate: ", baudrate, BASH_TIPS['DEFAULT'])
+                KFlash.log(INFO_MSG,"Selected Baudrate: ", baudrate, BASH_TIPS['DEFAULT'])
                 out = struct.pack('III', 0, 4, baudrate)
                 crc32_checksum = struct.pack('I', binascii.crc32(out) & 0xFFFFFFFF)
                 out = struct.pack('HH', 0xd6, 0x00) + crc32_checksum + out
@@ -552,7 +552,7 @@ class KFlash:
                 if args.Board == "goE":
                     if baudrate >= 4500000:
                         # OPENEC super baudrate
-                        printf(INFO_MSG, "Enable OPENEC super baudrate!!!",  BASH_TIPS['DEFAULT'])
+                        KFlash.log(INFO_MSG, "Enable OPENEC super baudrate!!!",  BASH_TIPS['DEFAULT'])
                         if baudrate == 4500000:
                             self._port.baudrate = 300
                         if baudrate == 6000000:
@@ -568,9 +568,9 @@ class KFlash:
                 #              rgwan <dv.xw@qq.com>
                 baudrate = 1500000
                 if args.Board == "goE" or args.Board == "trainer":
-                    printf(INFO_MSG,"Selected Stage0 Baudrate: ", baudrate, BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG,"Selected Stage0 Baudrate: ", baudrate, BASH_TIPS['DEFAULT'])
                     # This is for openec, contained ft2232, goE and trainer
-                    printf(INFO_MSG,"FT2232 mode", BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG,"FT2232 mode", BASH_TIPS['DEFAULT'])
                     baudrate_stage0 = int(baudrate * 38.6 / 38)
                     out = struct.pack('III', 0, 4, baudrate_stage0)
                     crc32_checksum = struct.pack('I', binascii.crc32(out) & 0xFFFFFFFF)
@@ -586,20 +586,20 @@ class KFlash:
                         if retry_count > 3:
                             err = (ERROR_MSG,'Fast mode failed, please use slow mode by add parameter ' + BASH_TIPS['GREEN'] + '--Slow', BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
+                            raise_exception( Exception(err) )
                         try:
                             self.greeting()
                             break
                         except TimeoutError:
                             pass
                 elif args.Board == "dan" or args.Board == "bit" or args.Board == "kd233":
-                    printf(INFO_MSG,"CH340 mode", BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG,"CH340 mode", BASH_TIPS['DEFAULT'])
                     # This is for CH340, contained dan, bit and kd233
                     baudrate_stage0 = int(baudrate * 38.4 / 38)
                     # CH340 can not use this method, test failed, take risks at your own risk
                 else:
                     # This is for unknown board
-                    printf(WARN_MSG,"Unknown mode", BASH_TIPS['DEFAULT'])
+                    KFlash.log(WARN_MSG,"Unknown mode", BASH_TIPS['DEFAULT'])
 
             def __init__(self, port='/dev/ttyUSB1', baudrate=115200):
                 # configure the serial connections (the parameters differs on the device you are connecting to)
@@ -611,7 +611,7 @@ class KFlash:
                     bytesize=serial.EIGHTBITS,
                     timeout=0.1
                 )
-                printf(INFO_MSG, "Default baudrate is", baudrate, ", later it may be changed to the value you set.",  BASH_TIPS['DEFAULT'])
+                KFlash.log(INFO_MSG, "Default baudrate is", baudrate, ", later it may be changed to the value you set.",  BASH_TIPS['DEFAULT'])
 
                 self._port.isOpen()
                 self._slip_reader = slip_reader(self._port)
@@ -628,7 +628,7 @@ class KFlash:
                 buf = b'\xc0' \
                       + (packet.replace(b'\xdb', b'\xdb\xdd').replace(b'\xc0', b'\xdb\xdc')) \
                       + b'\xc0'
-                #printf('[WRITE]', binascii.hexlify(buf))
+                #KFlash.log('[WRITE]', binascii.hexlify(buf))
                 return self._port.write(buf)
 
             def read_loop(self):
@@ -636,7 +636,7 @@ class KFlash:
                 # while self._port.inWaiting() > 0:
                 #     out += self._port.read(1)
 
-                # printf(out)
+                # KFlash.log(out)
                 while 1:
                     sys.stdout.write('[RECV] raw data: ')
                     sys.stdout.write(binascii.hexlify(self._port.read(1)).decode())
@@ -649,7 +649,7 @@ class KFlash:
                 #sys.stdout.write('[RECV one return] raw data: ')
                 while 1:
                     if time.time() - timeout_init > ISP_RECEIVE_TIMEOUT:
-                        self.raise_exception( TimeoutError )
+                        raise_exception( TimeoutError )
                     c = self._port.read(1)
                     #sys.stdout.write(binascii.hexlify(c).decode())
                     sys.stdout.flush()
@@ -659,7 +659,7 @@ class KFlash:
                 in_escape = False
                 while 1:
                     if time.time() - timeout_init > ISP_RECEIVE_TIMEOUT:
-                        self.raise_exception( TimeoutError )
+                        raise_exception( TimeoutError )
                     c = self._port.read(1)
                     #sys.stdout.write(binascii.hexlify(c).decode())
                     sys.stdout.flush()
@@ -673,7 +673,7 @@ class KFlash:
                         elif c == b'\xdd':
                             data += b'\xdb'
                         else:
-                            self.raise_exception( Exception('Invalid SLIP escape (%r%r)' % (b'\xdb', c)) )
+                            raise_exception( Exception('Invalid SLIP escape (%r%r)' % (b'\xdb', c)) )
                     elif c == b'\xdb':  # start of escape sequence
                         in_escape = True
 
@@ -687,12 +687,12 @@ class KFlash:
                 self._port.setDTR (False)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- RESET to LOW, IO16 to HIGH --')
+                #KFlash.log('-- RESET to LOW, IO16 to HIGH --')
                 # Pull reset down and keep 10ms
                 self._port.setDTR (True)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- IO16 to LOW, RESET to HIGH --')
+                #KFlash.log('-- IO16 to LOW, RESET to HIGH --')
                 # Pull IO16 to low and release reset
                 self._port.setRTS (True)
                 self._port.setDTR (False)
@@ -701,12 +701,12 @@ class KFlash:
                 self._port.setDTR (False)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- RESET to LOW --')
+                #KFlash.log('-- RESET to LOW --')
                 # Pull reset down and keep 10ms
                 self._port.setDTR (True)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- RESET to HIGH, BOOT --')
+                #KFlash.log('-- RESET to HIGH, BOOT --')
                 # Pull IO16 to low and release reset
                 self._port.setRTS (False)
                 self._port.setDTR (False)
@@ -717,12 +717,12 @@ class KFlash:
                 self._port.setDTR (False)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- RESET to LOW, IO16 to HIGH --')
+                #KFlash.log('-- RESET to LOW, IO16 to HIGH --')
                 # Pull reset down and keep 10ms
                 self._port.setDTR (False)
                 self._port.setRTS (True)
                 time.sleep(0.1)
-                #printf('-- IO16 to LOW, RESET to HIGH --')
+                #KFlash.log('-- IO16 to LOW, RESET to HIGH --')
                 # Pull IO16 to low and release reset
                 self._port.setRTS (False)
                 self._port.setDTR (True)
@@ -731,12 +731,12 @@ class KFlash:
                 self._port.setDTR (False)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- RESET to LOW --')
+                #KFlash.log('-- RESET to LOW --')
                 # Pull reset down and keep 10ms
                 self._port.setDTR (False)
                 self._port.setRTS (True)
                 time.sleep(0.1)
-                #printf('-- RESET to HIGH, BOOT --')
+                #KFlash.log('-- RESET to HIGH, BOOT --')
                 # Pull IO16 to low and release reset
                 self._port.setRTS (False)
                 self._port.setDTR (False)
@@ -747,12 +747,12 @@ class KFlash:
                 self._port.setDTR (True)   ## output 0
                 self._port.setRTS (True)
                 time.sleep(0.1)
-                #printf('-- RESET to LOW --')
+                #KFlash.log('-- RESET to LOW --')
                 # Pull reset down and keep 10ms
                 self._port.setRTS (False)
                 self._port.setDTR (True)
                 time.sleep(0.1)
-                #printf('-- RESET to HIGH, BOOT --')
+                #KFlash.log('-- RESET to HIGH, BOOT --')
                 # Pull IO16 to low and release reset
                 self._port.setRTS (False)
                 self._port.setDTR (True)
@@ -761,12 +761,12 @@ class KFlash:
                 self._port.setDTR (False)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- RESET to LOW --')
+                #KFlash.log('-- RESET to LOW --')
                 # Pull reset down and keep 10ms
                 self._port.setRTS (False)
                 self._port.setDTR (True)
                 time.sleep(0.1)
-                #printf('-- RESET to HIGH, BOOT --')
+                #KFlash.log('-- RESET to HIGH, BOOT --')
                 # Pull IO16 to low and release reset
                 self._port.setRTS (True)
                 self._port.setDTR (True)
@@ -777,12 +777,12 @@ class KFlash:
                 self._port.setDTR (False)
                 self._port.setRTS (False)
                 time.sleep(0.1)
-                #printf('-- RESET to LOW --')
+                #KFlash.log('-- RESET to LOW --')
                 # Pull reset down and keep 10ms
                 self._port.setRTS (False)
                 self._port.setDTR (True)
                 time.sleep(0.1)
-                #printf('-- RESET to HIGH, BOOT --')
+                #KFlash.log('-- RESET to HIGH, BOOT --')
                 # Pull IO16 to low and release reset
                 self._port.setRTS (False)
                 self._port.setDTR (False)
@@ -792,14 +792,17 @@ class KFlash:
                 self._port.write(b'\xc0\xc2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc0')
                 op, reason, text = ISPResponse.parse(self.recv_one_return())
 
-                #printf('MAIX return op:', ISPResponse.ISPOperation(op).name, 'reason:', ISPResponse.ErrorCode(reason).name)
+                #KFlash.log('MAIX return op:', ISPResponse.ISPOperation(op).name, 'reason:', ISPResponse.ErrorCode(reason).name)
 
 
             def flash_greeting(self):
                 retry_count = 0
                 while 1:
                     self.checkKillExit()
-                    self._port.write(b'\xc0\xd2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc0')
+                    try:
+                        self._port.write(b'\xc0\xd2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc0')
+                    except Exception:
+                        raise_exception( Exception("Connection disconnected, try again or maybe need use Slow mode, or decrease baudrate") )
                     retry_count = retry_count + 1
                     try:
                         op, reason, text = FlashModeResponse.parse(self.recv_one_return())
@@ -807,30 +810,30 @@ class KFlash:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to Connect to K210's Stub",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Index Error, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Index Error, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
                     except TimeoutError:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to Connect to K210's Stub",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Timeout Error, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Timeout Error, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
                     except:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to Connect to K210's Stub",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Unexcepted Error, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Unexcepted Error, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
-                    # printf('MAIX return op:', FlashModeResponse.Operation(op).name, 'reason:',
+                    # KFlash.log('MAIX return op:', FlashModeResponse.Operation(op).name, 'reason:',
                     #      FlashModeResponse.ErrorCode(reason).name)
                     if FlashModeResponse.Operation(op) == FlashModeResponse.Operation.ISP_NOP and FlashModeResponse.ErrorCode(reason) == FlashModeResponse.ErrorCode.ISP_RET_OK:
-                        printf(INFO_MSG,"Boot to Flashmode Successfully",BASH_TIPS['DEFAULT'])
+                        KFlash.log(INFO_MSG,"Boot to Flashmode Successfully",BASH_TIPS['DEFAULT'])
                         self._port.flushInput()
                         self._port.flushOutput()
                         break
@@ -838,13 +841,13 @@ class KFlash:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to Connect to K210's Stub",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Unexcepted Return recevied, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Unexcepted Return recevied, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
 
             def boot(self, address=0x80000000):
-                printf(INFO_MSG,"Booting From " + hex(address),BASH_TIPS['DEFAULT'])
+                KFlash.log(INFO_MSG,"Booting From " + hex(address),BASH_TIPS['DEFAULT'])
 
                 out = struct.pack('II', address, 0)
 
@@ -855,33 +858,33 @@ class KFlash:
 
             def recv_debug(self):
                 op, reason, text = ISPResponse.parse(self.recv_one_return())
-                #printf('[RECV] op:', ISPResponse.ISPOperation(op).name, 'reason:', ISPResponse.ErrorCode(reason).name)
+                #KFlash.log('[RECV] op:', ISPResponse.ISPOperation(op).name, 'reason:', ISPResponse.ErrorCode(reason).name)
                 if text:
-                    printf('-' * 30)
-                    printf(text)
-                    printf('-' * 30)
+                    KFlash.log('-' * 30)
+                    KFlash.log(text)
+                    KFlash.log('-' * 30)
                 if ISPResponse.ErrorCode(reason) not in (ISPResponse.ErrorCode.ISP_RET_DEFAULT, ISPResponse.ErrorCode.ISP_RET_OK):
-                    printf('Failed, retry, errcode=', hex(reason))
+                    KFlash.log('Failed, retry, errcode=', hex(reason))
                     return False
                 return True
 
             def flash_recv_debug(self):
                 op, reason, text = FlashModeResponse.parse(self.recv_one_return())
-                #printf('[Flash-RECV] op:', FlashModeResponse.Operation(op).name, 'reason:',
+                #KFlash.log('[Flash-RECV] op:', FlashModeResponse.Operation(op).name, 'reason:',
                 #      FlashModeResponse.ErrorCode(reason).name)
                 if text:
-                    printf('-' * 30)
-                    printf(text)
-                    printf('-' * 30)
+                    KFlash.log('-' * 30)
+                    KFlash.log(text)
+                    KFlash.log('-' * 30)
 
                 if FlashModeResponse.ErrorCode(reason) not in (FlashModeResponse.ErrorCode.ISP_RET_OK, FlashModeResponse.ErrorCode.ISP_RET_OK):
-                    printf('Failed, retry')
+                    KFlash.log('Failed, retry')
                     return False
                 return True
 
             def init_flash(self, chip_type):
                 chip_type = int(chip_type)
-                printf(INFO_MSG,"Selected Flash: ",("In-Chip", "On-Board")[chip_type],BASH_TIPS['DEFAULT'])
+                KFlash.log(INFO_MSG,"Selected Flash: ",("In-Chip", "On-Board")[chip_type],BASH_TIPS['DEFAULT'])
                 out = struct.pack('II', chip_type, 0)
                 crc32_checksum = struct.pack('I', binascii.crc32(out) & 0xFFFFFFFF)
                 out = struct.pack('HH', 0xd7, 0x00) + crc32_checksum + out
@@ -897,44 +900,44 @@ class KFlash:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to initialize flash",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Index Error, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Index Error, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
                     except TimeoutError:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to initialize flash",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Timeout Error, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Timeout Error, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
                     except:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to initialize flash",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Unexcepted Error, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Unexcepted Error, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
-                    # printf('MAIX return op:', FlashModeResponse.Operation(op).name, 'reason:',
+                    # KFlash.log('MAIX return op:', FlashModeResponse.Operation(op).name, 'reason:',
                     #      FlashModeResponse.ErrorCode(reason).name)
                     if FlashModeResponse.Operation(op) == FlashModeResponse.Operation.FLASHMODE_FLASH_INIT and FlashModeResponse.ErrorCode(reason) == FlashModeResponse.ErrorCode.ISP_RET_OK:
-                        printf(INFO_MSG,"Initialization flash Successfully",BASH_TIPS['DEFAULT'])
+                        KFlash.log(INFO_MSG,"Initialization flash Successfully",BASH_TIPS['DEFAULT'])
                         break
                     else:
                         if retry_count > MAX_RETRY_TIMES:
                             err = (ERROR_MSG,"Failed to initialize flash",BASH_TIPS['DEFAULT'])
                             err = tuple2str(err)
-                            self.raise_exception( Exception(err) )
-                        printf(WARN_MSG,"Unexcepted Return recevied, retrying...",BASH_TIPS['DEFAULT'])
+                            raise_exception( Exception(err) )
+                        KFlash.log(WARN_MSG,"Unexcepted Return recevied, retrying...",BASH_TIPS['DEFAULT'])
                         time.sleep(0.1)
                         continue
 
             def flash_dataframe(self, data, address=0x80000000):
                 DATAFRAME_SIZE = 1024
                 data_chunks = chunks(data, DATAFRAME_SIZE)
-                #printf('[DEBUG] flash dataframe | data length:', len(data))
+                #KFlash.log('[DEBUG] flash dataframe | data length:', len(data))
                 total_chunk = math.ceil(len(data)/DATAFRAME_SIZE)
 
                 time_start = time.time()
@@ -942,21 +945,21 @@ class KFlash:
                     self.checkKillExit()
                     while 1:
                         self.checkKillExit()
-                        #printf('[INFO] sending chunk', i, '@address', hex(address), 'chunklen', len(chunk))
+                        #KFlash.log('[INFO] sending chunk', i, '@address', hex(address), 'chunklen', len(chunk))
                         out = struct.pack('II', address, len(chunk))
 
                         crc32_checksum = struct.pack('I', binascii.crc32(out + chunk) & 0xFFFFFFFF)
 
                         out = struct.pack('HH', 0xc3, 0x00) + crc32_checksum + out + chunk  # op: ISP_MEMORY_WRITE: 0xc3
                         sent = self.write(out)
-                        #printf('[INFO]', 'sent', sent, 'bytes', 'checksum', binascii.hexlify(crc32_checksum).decode())
+                        #KFlash.log('[INFO]', 'sent', sent, 'bytes', 'checksum', binascii.hexlify(crc32_checksum).decode())
 
                         address += len(chunk)
 
                         if self.recv_debug():
                             break
 
-                    columns, lines = get_terminal_size()
+                    columns, lines = TerminalSize.get_terminal_size((100, 24), terminal)
                     time_delta = time.time() - time_start
                     speed = ''
                     if (time_delta > 1):
@@ -976,30 +979,30 @@ class KFlash:
 
                 DATAFRAME_SIZE = ISP_FLASH_DATA_FRAME_SIZE
                 data_chunks = chunks(data, DATAFRAME_SIZE)
-                #printf('[DEBUG] flash dataframe | data length:', len(data))
+                #KFlash.log('[DEBUG] flash dataframe | data length:', len(data))
 
 
 
                 for n, chunk in enumerate(data_chunks):
-                    #printf('[INFO] sending chunk', i, '@address', hex(address))
+                    #KFlash.log('[INFO] sending chunk', i, '@address', hex(address))
                     out = struct.pack('II', address, len(chunk))
 
                     crc32_checksum = struct.pack('I', binascii.crc32(out + chunk) & 0xFFFFFFFF)
 
                     out = struct.pack('HH', 0xd4, 0x00) + crc32_checksum + out + chunk
-                    #printf("[$$$$]", binascii.hexlify(out[:32]).decode())
+                    #KFlash.log("[$$$$]", binascii.hexlify(out[:32]).decode())
                     retry_count = 0
                     while True:
                         try:
                             sent = self.write(out)
-                            #printf('[INFO]', 'sent', sent, 'bytes', 'checksum', crc32_checksum)
+                            #KFlash.log('[INFO]', 'sent', sent, 'bytes', 'checksum', crc32_checksum)
                             self.flash_recv_debug()
                         except:
                             retry_count = retry_count + 1
                             if retry_count > MAX_RETRY_TIMES:
                                 err = (ERROR_MSG,"Error Count Exceeded, Stop Trying",BASH_TIPS['DEFAULT'])
                                 err = tuple2str(err)
-                                self.raise_exception( Exception(err) )
+                                raise_exception( Exception(err) )
                             continue
                         break
                     address += len(chunk)
@@ -1007,10 +1010,10 @@ class KFlash:
 
 
             def flash_erase(self):
-                #printf('[DEBUG] erasing spi flash.')
+                #KFlash.log('[DEBUG] erasing spi flash.')
                 self._port.write(b'\xc0\xd3\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc0')
                 op, reason, text = FlashModeResponse.parse(self.recv_one_return())
-                #printf('MAIX return op:', FlashModeResponse.Operation(op).name, 'reason:',
+                #KFlash.log('MAIX return op:', FlashModeResponse.Operation(op).name, 'reason:',
                 #      FlashModeResponse.ErrorCode(reason).name)
 
             def install_flash_bootloader(self, data):
@@ -1024,19 +1027,19 @@ class KFlash:
                 except ImportError:
                     err = (ERROR_MSG,'pyelftools must be installed, run '+BASH_TIPS['GREEN']+'`' + ('pip', 'pip3')[sys.version_info > (3, 0)] + ' install pyelftools`',BASH_TIPS['DEFAULT'])
                     err = tuple2str(err)
-                    self.raise_exception( Exception(err) )
+                    raise_exception( Exception(err) )
 
                 elffile = ELFFile(f)
                 if elffile['e_entry'] != 0x80000000:
-                    printf(WARN_MSG,"ELF entry is 0x%x instead of 0x80000000" % (elffile['e_entry']), BASH_TIPS['DEFAULT'])
+                    KFlash.log(WARN_MSG,"ELF entry is 0x%x instead of 0x80000000" % (elffile['e_entry']), BASH_TIPS['DEFAULT'])
 
                 for segment in elffile.iter_segments():
                     t = describe_p_type(segment['p_type'])
-                    printf(INFO_MSG, ("Program Header: Size: %d, Virtual Address: 0x%x, Type: %s" % (segment['p_filesz'], segment['p_vaddr'], t)), BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG, ("Program Header: Size: %d, Virtual Address: 0x%x, Type: %s" % (segment['p_filesz'], segment['p_vaddr'], t)), BASH_TIPS['DEFAULT'])
                     if not (segment['p_vaddr'] & 0x80000000):
                         continue
                     if segment['p_filesz']==0 or segment['p_vaddr']==0:
-                        printf("Skipped")
+                        KFlash.log("Skipped")
                         continue
                     self.flash_dataframe(segment.data(), segment['p_vaddr'])
 
@@ -1044,7 +1047,7 @@ class KFlash:
                 # type: (bytes, bytes, int, bool) -> None
                 # Don't remove above code!
 
-                #printf('[DEBUG] flash_firmware DEBUG: aeskey=', aes_key)
+                #KFlash.log('[DEBUG] flash_firmware DEBUG: aeskey=', aes_key)
 
                 if sha256Prefix == True:
                     # Add header to the firmware
@@ -1078,9 +1081,9 @@ class KFlash:
                     chunk = chunk.ljust(ISP_FLASH_DATA_FRAME_SIZE, b'\x00')  # align by size of dataframe
 
                     # Download a dataframe
-                    #printf('[INFO]', 'Write firmware data piece')
+                    #KFlash.log('[INFO]', 'Write firmware data piece')
                     self.dump_to_flash(chunk, address= n * ISP_FLASH_DATA_FRAME_SIZE + address_offset)
-                    columns, lines = get_terminal_size()
+                    columns, lines = TerminalSize.get_terminal_size((100, 24), terminal)
                     time_delta = time.time() - time_start
                     speed = ''
                     if (time_delta > 1):
@@ -1095,7 +1098,6 @@ class KFlash:
                     self._port.close()
                     self._kill_process = False
                     raise Exception("Cancel")
-
 
         def open_terminal(reset):
             control_signal = '0' if reset else '1'
@@ -1113,17 +1115,16 @@ class KFlash:
             parser.add_argument("-p", "--port", help="COM Port", default="DEFAULT")
             parser.add_argument("-f", "--flash", help="SPI Flash type, 0 for SPI3, 1 for SPI0", default=1)
             parser.add_argument("-b", "--baudrate", type=int, help="UART baudrate for uploading firmware", default=115200)
-            parser.add_argument("-l", "--bootloader", help="bootloader bin path", required=False, default=None)
+            parser.add_argument("-l", "--bootloader", help="Bootloader bin path", required=False, default=None)
             parser.add_argument("-k", "--key", help="AES key in hex, if you need encrypt your firmware.", required=False, default=None)
-            parser.add_argument("-v", "--verbose", help="increase output verbosity", default=False, action="store_true")
+            parser.add_argument("-v", "--version", help="Print version.", action='version', version='0.8.3')
+            parser.add_argument("--verbose", help="Increase output verbosity", default=False, action="store_true")
             parser.add_argument("-t", "--terminal", help="Start a terminal after finish (Python miniterm)", default=False, action="store_true")
             parser.add_argument("-n", "--noansi", help="Do not use ANSI colors, recommended in Windows CMD", default=False, action="store_true")
             parser.add_argument("-s", "--sram", help="Download firmware to SRAM and boot", default=False, action="store_true")
-            parser.add_argument("-B", "--Board",required=False, type=str, help="Select dev board, e.g. -B kd233", choices=boards_choices)
+            parser.add_argument("-B", "--Board",required=False, type=str, help="Select dev board, e.g. kd233, dan, bit, goD, goE or trainer")
             parser.add_argument("-S", "--Slow",required=False, help="Slow download mode", default=False)
-            if terminal:
-                parser.add_argument("firmware", help="firmware bin path")
-
+            parser.add_argument("firmware", help="firmware bin path")
             args = parser.parse_args()
         else:
             args = argparse.Namespace()
@@ -1148,8 +1149,10 @@ class KFlash:
             args.Board = board
             args.firmware = file
             args.Slow = slow_mode
+
         if args.Board == "maixduino" or args.Board == "bit_mic":
             args.Board = "goE"
+
         if (args.noansi == True):
             BASH_TIPS = dict(NORMAL='',BOLD='',DIM='',UNDERLINE='',
                                 DEFAULT='', RED='', YELLOW='', GREEN='',
@@ -1157,7 +1160,7 @@ class KFlash:
             ERROR_MSG   = BASH_TIPS['RED']+BASH_TIPS['BOLD']+'[ERROR]'+BASH_TIPS['NORMAL']
             WARN_MSG    = BASH_TIPS['YELLOW']+BASH_TIPS['BOLD']+'[WARN]'+BASH_TIPS['NORMAL']
             INFO_MSG    = BASH_TIPS['GREEN']+BASH_TIPS['BOLD']+'[INFO]'+BASH_TIPS['NORMAL']
-            printf(INFO_MSG,'ANSI colors not used',BASH_TIPS['DEFAULT'])
+            KFlash.log(INFO_MSG,'ANSI colors not used',BASH_TIPS['DEFAULT'])
 
         manually_set_the_board = False
         if args.Board:
@@ -1175,7 +1178,7 @@ class KFlash:
                     _port = list_port_info[0].device
                 elif len(list_port_info) > 1:
                     _port = list_port_info[1].device
-                printf(INFO_MSG,"COM Port Auto Detected, Selected ", _port, BASH_TIPS['DEFAULT'])
+                KFlash.log(INFO_MSG,"COM Port Auto Detected, Selected ", _port, BASH_TIPS['DEFAULT'])
             elif args.Board == "trainer":
                 list_port_info = list(serial.tools.list_ports.grep("0403")) #Take the first one
                 if(len(list_port_info)==0):
@@ -1184,27 +1187,25 @@ class KFlash:
                     raise_exception( Exception(err) )
                 list_port_info.sort()
                 _port = list_port_info[0].device
-                printf(INFO_MSG,"COM Port Auto Detected, Selected ", _port, BASH_TIPS['DEFAULT'])
+                KFlash.log(INFO_MSG,"COM Port Auto Detected, Selected ", _port, BASH_TIPS['DEFAULT'])
             else:
                 try:
                     list_port_info = next(serial.tools.list_ports.grep(VID_LIST_FOR_AUTO_LOOKUP)) #Take the first one within the list
                     _port = list_port_info.device
-                    printf(INFO_MSG,"COM Port Auto Detected, Selected ", _port, BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG,"COM Port Auto Detected, Selected ", _port, BASH_TIPS['DEFAULT'])
                 except StopIteration:
                     err = (ERROR_MSG,"No vaild COM Port found in Auto Detect, Check Your Connection or Specify One by"+BASH_TIPS['GREEN']+'`--port/-p`',BASH_TIPS['DEFAULT'])
                     err = tuple2str(err)
                     raise_exception( Exception(err) )
         else:
             _port = args.port
-            printf(INFO_MSG,"COM Port Selected Manually: ", _port, BASH_TIPS['DEFAULT'])
+            KFlash.log(INFO_MSG,"COM Port Selected Manually: ", _port, BASH_TIPS['DEFAULT'])
 
         self.loader = MAIXLoader(port=_port, baudrate=115200)
         file_format = ProgramFileFormat.FMT_BINARY
 
         # 0. Check firmware
-        try:
-            firmware_bin = open(args.firmware, 'rb')
-        except FileNotFoundError:
+        if not os.path.exists(args.firmware):
             err = (ERROR_MSG,'Unable to find the firmware at ', args.firmware, BASH_TIPS['DEFAULT'])
             err = tuple2str(err)
             raise_exception( Exception(err) )
@@ -1214,7 +1215,7 @@ class KFlash:
             #if file_header.startswith(bytes([0x50, 0x4B])):
             if file_header.startswith(b'\x50\x4B'):
                 if ".kfpkg" != os.path.splitext(args.firmware)[1]:
-                    printf(INFO_MSG, 'Find a zip file, but not with ext .kfpkg:', args.firmware, BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG, 'Find a zip file, but not with ext .kfpkg:', args.firmware, BASH_TIPS['DEFAULT'])
                 else:
                     file_format = ProgramFileFormat.FMT_KFPKG
 
@@ -1222,19 +1223,21 @@ class KFlash:
             if file_header.startswith(b'\x7f\x45\x4c\x46'):
                 file_format = ProgramFileFormat.FMT_ELF
                 if args.sram:
-                    printf(INFO_MSG, 'Find an ELF file:', args.firmware, BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG, 'Find an ELF file:', args.firmware, BASH_TIPS['DEFAULT'])
                 else:
                     err = (ERROR_MSG, 'This is an ELF file and cannot be programmed to flash directly:', args.firmware, BASH_TIPS['DEFAULT'] , '\r\nPlease retry:', args.firmware + '.bin', BASH_TIPS['DEFAULT'])
                     err = tuple2str(err)
                     raise_exception( Exception(err) )
 
         # 1. Greeting.
-        printf(INFO_MSG,"Trying to Enter the ISP Mode...",BASH_TIPS['DEFAULT'])
+        KFlash.log(INFO_MSG,"Trying to Enter the ISP Mode...",BASH_TIPS['DEFAULT'])
 
         retry_count = 0
 
         while 1:
             self.checkKillExit()
+            if not self.loader._port.isOpen():
+                self.loader._port.open()
             try:
                 retry_count = retry_count + 1
                 if retry_count > 15:
@@ -1243,7 +1246,7 @@ class KFlash:
                     raise_exception( Exception(err) )
                 if args.Board == "dan" or args.Board == "bit" or args.Board == "trainer":
                     try:
-                        printf('.', end='')
+                        KFlash.log('.', end='')
                         self.loader.reset_to_isp_dan()
                         self.loader.greeting()
                         break
@@ -1251,7 +1254,7 @@ class KFlash:
                         pass
                 elif args.Board == "kd233":
                     try:
-                        printf('_', end='')
+                        KFlash.log('_', end='')
                         self.loader.reset_to_isp_kd233()
                         self.loader.greeting()
                         break
@@ -1259,7 +1262,7 @@ class KFlash:
                         pass
                 elif args.Board == "goE":
                     try:
-                        printf('*', end='')
+                        KFlash.log('*', end='')
                         self.loader.reset_to_isp_kd233()
                         self.loader.greeting()
                         break
@@ -1267,7 +1270,7 @@ class KFlash:
                         pass
                 elif args.Board == "goD":
                     try:
-                        printf('#', end='')
+                        KFlash.log('#', end='')
                         self.loader.reset_to_isp_goD()
                         self.loader.greeting()
                         break
@@ -1275,56 +1278,64 @@ class KFlash:
                         pass
                 else:
                     try:
-                        printf('.', end='')
+                        KFlash.log('.', end='')
                         self.loader.reset_to_isp_dan()
                         self.loader.greeting()
                         args.Board = "dan"
-                        printf()
-                        printf(INFO_MSG,"Automatically detected dan/bit/trainer",BASH_TIPS['DEFAULT'])
+                        KFlash.log()
+                        KFlash.log(INFO_MSG,"Automatically detected dan/bit/trainer",BASH_TIPS['DEFAULT'])
                         break
                     except TimeoutError:
+                        if not self.loader._port.isOpen():
+                            self.loader._port.open()
                         pass
                     try:
-                        printf('_', end='')
+                        KFlash.log('_', end='')
                         self.loader.reset_to_isp_kd233()
                         self.loader.greeting()
                         args.Board = "kd233"
-                        printf()
-                        printf(INFO_MSG,"Automatically detected goE/kd233",BASH_TIPS['DEFAULT'])
+                        KFlash.log()
+                        KFlash.log(INFO_MSG,"Automatically detected goE/kd233",BASH_TIPS['DEFAULT'])
                         break
                     except TimeoutError:
+                        if not self.loader._port.isOpen():
+                            self.loader._port.open()
                         pass
                     try:
-                        printf('.', end='')
+                        KFlash.log('.', end='')
                         self.loader.reset_to_isp_goD()
                         self.loader.greeting()
                         args.Board = "goD"
-                        printf()
-                        printf(INFO_MSG,"Automatically detected goD",BASH_TIPS['DEFAULT'])
+                        KFlash.log()
+                        KFlash.log(INFO_MSG,"Automatically detected goD",BASH_TIPS['DEFAULT'])
                         break
                     except TimeoutError:
+                        if not self.loader._port.isOpen():
+                            self.loader._port.open()
                         pass
                     try:
                         # Magic, just repeat, don't remove, it may unstable, don't know why.
-                        printf('_', end='')
+                        KFlash.log('_', end='')
                         self.loader.reset_to_isp_kd233()
                         self.loader.greeting()
                         args.Board = "kd233"
-                        printf()
-                        printf(INFO_MSG,"Automatically detected goE/kd233",BASH_TIPS['DEFAULT'])
+                        KFlash.log()
+                        KFlash.log(INFO_MSG,"Automatically detected goE/kd233",BASH_TIPS['DEFAULT'])
                         break
                     except TimeoutError:
+                        if not self.loader._port.isOpen():
+                            self.loader._port.open()
                         pass
             except Exception as e:
-                printf()
+                KFlash.log()
                 raise_exception( Exception("Greeting fail, check serial port ("+str(e)+")" ) )
 
         # Don't remove this line
         # Dangerous, here are dinosaur infested!!!!!
         ISP_RECEIVE_TIMEOUT = 3
 
-        printf()
-        printf(INFO_MSG,"Greeting Message Detected, Start Downloading ISP",BASH_TIPS['DEFAULT'])
+        KFlash.log()
+        KFlash.log(INFO_MSG,"Greeting Message Detected, Start Downloading ISP",BASH_TIPS['DEFAULT'])
 
         if manually_set_the_board and (not args.Slow):
             if (args.baudrate >= 1500000) or args.sram:
@@ -1332,17 +1343,22 @@ class KFlash:
 
         # 2. download bootloader and firmware
         if args.sram:
-            if file_format == ProgramFileFormat.FMT_KFPKG:
-                err = (ERROR_MSG, "Unable to load kfpkg to SRAM")
-                err = tuple2str(err)
-                raise_exception( Exception(err) )
-            elif file_format == ProgramFileFormat.FMT_ELF:
-                self.loader.load_elf_to_sram(firmware_bin)
-            else:
-                self.loader.install_flash_bootloader(firmware_bin.read())
+            with open(args.firmware, 'rb') as firmware_bin:
+                if file_format == ProgramFileFormat.FMT_KFPKG:
+                    err = (ERROR_MSG, "Unable to load kfpkg to SRAM")
+                    err = tuple2str(err)
+                    raise_exception( Exception(err) )
+                elif file_format == ProgramFileFormat.FMT_ELF:
+                    self.loader.load_elf_to_sram(firmware_bin)
+                else:
+                    self.loader.install_flash_bootloader(firmware_bin.read())
         else:
             # install bootloader at 0x80000000
-            isp_loader = open(args.bootloader, 'rb').read() if args.bootloader else ISP_PROG
+            if args.bootloader:
+                with open(args.bootloader, 'rb') as f:
+                    isp_loader = f.read()
+            else:
+                isp_loader = ISP_PROG
             self.loader.install_flash_bootloader(isp_loader)
 
         # Boot the code from SRAM
@@ -1352,7 +1368,7 @@ class KFlash:
             # Dangerous, here are dinosaur infested!!!!!
             # Don't touch this code unless you know what you are doing
             self.loader._port.baudrate = args.baudrate
-            printf(INFO_MSG,"Boot user code from SRAM", BASH_TIPS['DEFAULT'])
+            KFlash.log(INFO_MSG,"Boot user code from SRAM", BASH_TIPS['DEFAULT'])
             if(args.terminal == True):
                 open_terminal(False)
             msg = "Burn SRAM OK"
@@ -1362,7 +1378,7 @@ class KFlash:
         # Don't touch this code unless you know what you are doing
         self.loader._port.baudrate = 115200
 
-        printf(INFO_MSG,"Wait For 0.1 second for ISP to Boot", BASH_TIPS['DEFAULT'])
+        KFlash.log(INFO_MSG,"Wait For 0.1 second for ISP to Boot", BASH_TIPS['DEFAULT'])
 
         time.sleep(0.1)
 
@@ -1370,14 +1386,13 @@ class KFlash:
 
         if args.baudrate != 115200:
             self.loader.change_baudrate(args.baudrate)
-            printf(INFO_MSG,"Baudrate changed, greeting with ISP again ... ", BASH_TIPS['DEFAULT'])
+            KFlash.log(INFO_MSG,"Baudrate changed, greeting with ISP again ... ", BASH_TIPS['DEFAULT'])
             self.loader.flash_greeting()
 
         self.loader.init_flash(args.flash)
 
         if file_format == ProgramFileFormat.FMT_KFPKG:
-            printf(INFO_MSG,"Extracting KFPKG ... ", BASH_TIPS['DEFAULT'])
-            firmware_bin.close()
+            KFlash.log(INFO_MSG,"Extracting KFPKG ... ", BASH_TIPS['DEFAULT'])
             with tempfile.TemporaryDirectory() as tmpdir:
                 try:
                     with zipfile.ZipFile(args.firmware) as zf:
@@ -1393,18 +1408,19 @@ class KFlash:
                 jsonFlashList = json.loads(sFlashList)
                 for lBinFiles in jsonFlashList['files']:
                     self.checkKillExit()
-                    printf(INFO_MSG,"Writing",lBinFiles['bin'],"into","0x%08x"%int(lBinFiles['address'], 0),BASH_TIPS['DEFAULT'])
+                    KFlash.log(INFO_MSG,"Writing",lBinFiles['bin'],"into","0x%08x"%int(lBinFiles['address'], 0),BASH_TIPS['DEFAULT'])
                     with open(os.path.join(tmpdir, lBinFiles["bin"]), "rb") as firmware_bin:
                         self.loader.flash_firmware(firmware_bin.read(), None, int(lBinFiles['address'], 0), lBinFiles['sha256Prefix'], filename=lBinFiles['bin'])
         else:
-            if args.key:
-                aes_key = binascii.a2b_hex(args.key)
-                if len(aes_key) != 16:
-                    raise_exception( ValueError('AES key must by 16 bytes') )
+            with open(args.firmware, 'rb') as firmware_bin:
+                if args.key:
+                    aes_key = binascii.a2b_hex(args.key)
+                    if len(aes_key) != 16:
+                        raise_exception( ValueError('AES key must by 16 bytes') )
 
-                self.loader.flash_firmware(firmware_bin.read(), aes_key=aes_key)
-            else:
-                self.loader.flash_firmware(firmware_bin.read())
+                    self.loader.flash_firmware(firmware_bin.read(), aes_key=aes_key)
+                else:
+                    self.loader.flash_firmware(firmware_bin.read())
 
         # 3. boot
         if args.Board == "dan" or args.Board == "bit" or args.Board == "trainer":
@@ -1416,9 +1432,9 @@ class KFlash:
         elif args.Board == "goD":
             self.loader.reset_to_boot_goD()
         else:
-            printf(WARN_MSG,"Board unknown !! please press reset to boot!!")
+            KFlash.log(WARN_MSG,"Board unknown !! please press reset to boot!!")
 
-        printf(INFO_MSG,"Rebooting...", BASH_TIPS['DEFAULT'])
+        KFlash.log(INFO_MSG,"Rebooting...", BASH_TIPS['DEFAULT'])
         try:
             self.loader._port.close()
         except Exception:
@@ -1446,7 +1462,7 @@ def main():
     except Exception as e:
         if str(e) == "Burn SRAM OK":
             sys.exit(0)
-        print(str(e))
+        kflash.log(str(e))
         sys.exit(1)
 
 if __name__ == '__main__':
